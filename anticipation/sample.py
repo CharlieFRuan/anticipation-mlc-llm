@@ -6,7 +6,6 @@ import math
 
 import torch
 import torch.nn.functional as F
-
 from tqdm import tqdm
 
 from anticipation import ops
@@ -73,7 +72,7 @@ def instr_logits(logits, full_history):
     return logits
 
 
-def add_token(model, z, tokens, top_p, current_time, debug=False):
+def add_token(model, z, tokens, top_p, current_time, debug=False, use_MLC=False):
     assert len(tokens) % 3 == 0
 
     history = tokens.copy()
@@ -85,8 +84,15 @@ def add_token(model, z, tokens, top_p, current_time, debug=False):
     new_token = []
     with torch.no_grad():
         for i in range(3):
-            input_tokens = torch.tensor(z + history + new_token).unsqueeze(0).to(model.device)
-            logits = model(input_tokens).logits[0,-1]
+            # Using HF model
+            if not use_MLC:
+                input_tokens = torch.tensor(z + history + new_token).unsqueeze(0).to(model.device)
+                logits = model(input_tokens).logits[0,-1]
+            else:
+                input_tokens = torch.tensor(z + history + new_token).unsqueeze(0)
+                logits = model._forward_tokens(input_tokens.numpy())[0,-1]
+                logits = torch.tensor(logits)
+                model.reset_chat()  # clear kv cache manually
 
             idx = input_tokens.shape[1]-1
             logits = safe_logits(logits, idx)
@@ -107,7 +113,7 @@ def add_token(model, z, tokens, top_p, current_time, debug=False):
     return new_token
 
 
-def generate(model, start_time, end_time, inputs=None, controls=None, top_p=1.0, debug=False, delta=DELTA*TIME_RESOLUTION):
+def generate(model, start_time, end_time, inputs=None, controls=None, top_p=1.0, debug=False, delta=DELTA*TIME_RESOLUTION, use_MLC=False):
     if inputs is None:
         inputs = []
 
@@ -173,8 +179,9 @@ def generate(model, start_time, end_time, inputs=None, controls=None, top_p=1.0,
                     # nothing more to anticipate
                     anticipated_time = math.inf
 
-            new_token = add_token(model, z, tokens, top_p, max(start_time,current_time))
+            new_token = add_token(model, z, tokens, top_p, max(start_time,current_time), use_MLC=use_MLC)
             new_time = new_token[0] - TIME_OFFSET
+            # print(new_time)  TODO: check why MLC breaks very early
             if new_time >= end_time:
                 break
 
